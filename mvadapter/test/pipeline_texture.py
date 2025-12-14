@@ -30,10 +30,8 @@ from mvadapter.utils.mesh_utils import (
 )
 # from mvadapter.utils.mesh_utils.mesh_process import process_raw
 
-
 def clear():
     torch.cuda.empty_cache()
-
 
 @contextmanager
 def mesh_use_texture(mesh: TexturedMesh, texture: torch.FloatTensor):
@@ -55,12 +53,10 @@ class ModProcessConfig:
     view_inpaint_max_rounds: int = 8
     view_inpaint_uv_padding_end: bool = True
 
-
 @dataclass
 class TexturePipelineOutput:
     shaded_model_save_path: Optional[str] = None
     pbr_model_save_path: Optional[str] = None
-
 
 class TexturePipeline:
     def __init__(
@@ -249,10 +245,10 @@ class TexturePipeline:
 
         mesh: TexturedMesh = load_mesh(
             mesh_path,
-            rescale=not keep_original_transform,
-            move_to_center=False if keep_original_transform else move_to_center,
-            front_x_to_y=False if keep_original_transform else front_x,
-            default_uv_size=uv_size,
+            rescale=not keep_original_transform, # 设置是否重置模型大小
+            move_to_center=False if keep_original_transform else move_to_center, # 设置是否将模型移动到中心
+            front_x_to_y=False if keep_original_transform else front_x, # 设置是否将模型的前方向从X轴调整为Y轴
+            default_uv_size=uv_size, # 设置默认的UV贴图大小
             device=self.device,
         )
 
@@ -282,15 +278,14 @@ class TexturePipeline:
             with open(custom_camera_json, "r") as f:
                 custom_cam_data = json.load(f)
             expected_views = len(custom_cam_data)
-            # cameras will be built lazily once we know image size / aspect
         else:
             raise ValueError(f"Unsupported camera_projection_type: {camera_projection_type}")
 
         mod_kwargs = {
-            "rgb": (rgb_path, rgb_process_config),
-            "base_color": (base_color_path, base_color_process_config),
-            "orm": (orm_path, orm_process_config),
-            "normal": (normal_path, normal_process_config),
+            "rgb": (rgb_path, rgb_process_config), # rgb贴图路径和处理配置
+            "base_color": (base_color_path, base_color_process_config), # 基础颜色贴图路径和处理配置
+            "orm": (orm_path, orm_process_config), # ORM贴图路径和处理配置
+            "normal": (normal_path, normal_process_config), # 法线贴图路径和处理配置
         }
         mod_uv_image, mod_uv_tensor = {}, {}
         for mod_name, (mod_path, mod_process_config) in mod_kwargs.items():

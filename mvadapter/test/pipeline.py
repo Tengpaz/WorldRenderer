@@ -194,7 +194,6 @@ def project_and_render(
     save_depth_frames_16bit(depth_frames, output_dir / "depth", "depth")
     save_frames(mask_frames, output_dir / "mask", "mask")
 
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Project video onto town.blend and export rgb/depth/mask frames.",
