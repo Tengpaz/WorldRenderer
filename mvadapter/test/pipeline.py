@@ -1,17 +1,14 @@
 import argparse
-import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
 from mvadapter.utils.mesh_utils.mesh import load_mesh
-from mvadapter.utils.mesh_utils.projection import CameraProjection
 from mvadapter.utils.mesh_utils.render import (
     SimpleNormalization,
     NVDiffRastContextWrapper,
@@ -22,6 +19,7 @@ from .glb import export_blend_to_glb
 from .video import load_frames
 from .camera import build_camera, export_camera_json, load_camera_from_json
 from .file import save_frames, save_depth_frames_16bit
+from .pipeline_texture import TexturePipeline, ModProcessConfig
 
 def project_and_render(
     mesh_path: Path,
@@ -36,8 +34,7 @@ def project_and_render(
     ctx_type: str,
     camera_json: Path,
     axis_convert: bool,
-    debug_dump_uv: bool,
-    checker_test: bool,
+    debug: bool,
 ) -> None:
     glb_path = mesh_path.with_suffix(".glb")
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
@@ -53,95 +50,83 @@ def project_and_render(
     frames_np = frames_np[:num_views]
     cam = cam_from_blend[:num_views]
 
-    # Preserve original Blender world scale to keep depth consistent with camera trajectory
-    mesh = load_mesh(
-        str(glb_path),
-        rescale=False,
-        move_to_center=False,
-        default_uv_size=uv_size,
-        merge_vertices=True,
+    # Use TexturePipeline with in-memory frames and camera override (Option B)
+    images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
+    tp = TexturePipeline(
+        upscaler_ckpt_path=None,
+        inpaint_ckpt_path=None,
         device=device,
+        ctx_type=ctx_type,
     )
-    # Fallback UVs if export lost UV coordinates
-    if mesh.v_tex is None:
-        uv_done = False
-        # 1) Try xatlas for a more accurate automatic unwrap
-        try:
-            import xatlas  # type: ignore
+    tp_out = tp(
+        mesh_path=str(glb_path),
+        save_dir=str(output_dir),
+        save_name="projected",
+        move_to_center=False,
+        front_x=False,
+        keep_original_transform=True,
+        uv_size=uv_size,
+        rgb_path="mvadapter/test/frames",
+        rgb_tensor=None,
+        rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
+        camera_projection_type="CUSTOM",
+        custom_camera_json=None,
+        cameras_override=cam,
+        debug_mode=debug,
+    )
 
-            v_np = mesh.v_pos.detach().cpu().numpy().astype(np.float32)
-            f_np = mesh.t_pos_idx.detach().cpu().numpy().astype(np.int32)
-            atlas = xatlas.Atlas()
-            atlas.add_mesh(v_np, f_np)
-            atlas.generate()
-            chart_uvs, _, _ = atlas.get_mesh(0)
-            uv = torch.from_numpy(chart_uvs[:, :2]).to(device)
-            # Normalize to [0,1]
-            uv_min, _ = torch.min(uv, dim=0, keepdim=True)
-            uv_max, _ = torch.max(uv, dim=0, keepdim=True)
-            uv = (uv - uv_min) / (uv_max - uv_min + 1e-8)
-            mesh.v_tex = uv
-            mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
-            uv_done = True
-            print("Fallback UV: generated with xatlas")
-        except Exception as e:
-            print(f"Fallback UV: xatlas unwrap failed ({e}), using bbox planar XY.")
+    mesh = load_mesh(
+        mesh_path = tp_out.shaded_model_save_path if tp_out.shaded_model_save_path is not None else str(glb_path),
+        rescale=False,
+        move_to_center=False, # 设置是否将模型移动到中心
+        front_x_to_y=False, # 设置是否将模型的前方向从X轴调整为Y轴
+        default_uv_size=uv_size, # 设置默认的UV贴图大小
+        merge_vertices=True, # 合并顶点以修复潜在问题
+        device = device,
+    )
 
-        # 2) Simple planar XY fallback if xatlas unavailable
-        if not uv_done:
-            v = mesh.v_pos
-            v_min, _ = torch.min(v, dim=0, keepdim=True)
-            v_max, _ = torch.max(v, dim=0, keepdim=True)
-            span = (v_max - v_min).clamp(min=1e-6)
-            uv_xy = (v[:, :2] - v_min[:, :2]) / span[:, :2]
-            mesh.v_tex = uv_xy.to(device)
-            mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
+    # if mesh.v_tex is None:
+    #     uv_done = False
+    #     try:
+    #         import xatlas  # type: ignore
 
-    if checker_test:
-        # Simple black/white checkerboard to validate UV orientation/coverage
-        step = uv_size // 16 if uv_size >= 16 else 1
-        grid_y = torch.arange(uv_size, device=device) // step
-        grid_x = torch.arange(uv_size, device=device) // step
-        checker = ((grid_y[:, None] + grid_x[None]) % 2).float()
-        checker = checker.unsqueeze(-1).repeat(1, 1, 3)
-        mesh.texture = checker
-    else:
-        mesh.texture = torch.zeros((uv_size, uv_size, 3), dtype=torch.float32, device=device)
+    #         v_np = mesh.v_pos.detach().cpu().numpy().astype(np.float32)
+    #         f_np = mesh.t_pos_idx.detach().cpu().numpy().astype(np.int32)
+    #         atlas = xatlas.Atlas()
+    #         atlas.add_mesh(v_np, f_np)
+    #         atlas.generate()
+    #         chart_uvs, _, _ = atlas.get_mesh(0)
+    #         uv = torch.from_numpy(chart_uvs[:, :2]).to(device)
+    #         uv_min, _ = torch.min(uv, dim=0, keepdim=True)
+    #         uv_max, _ = torch.max(uv, dim=0, keepdim=True)
+    #         uv = (uv - uv_min) / (uv_max - uv_min + 1e-8)
+    #         mesh.v_tex = uv
+    #         mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
+    #         uv_done = True
+    #         if debug:
+    #             print("Fallback UV: generated with xatlas")
+    #     except Exception as e:
+    #         if debug:
+    #             print(f"Fallback UV: xatlas unwrap failed ({e}), using bbox planar XY.")
 
-        cam_proj = CameraProjection(
-            pb_backend=pb_backend,
-            bg_remover=None,
-            device=device,
-            context_type=ctx_type,
-        )
-        images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
-        proj_out = cam_proj(
-            images=images_pt,
-            mesh=mesh,
-            cam=cam,
-            uv_size=uv_size,
-            from_scratch=True,
-            poisson_blending=False,
-            uv_padding=True,
-            # Relax validity filters to avoid fully-masked UVs
-            aoi_cos_valid_threshold=-1.0,
-            depth_grad_threshold=None,
-            iou_rejection_threshold=None,
-            return_dict=True,
-        )
-        if proj_out is None:
-            raise RuntimeError("Camera projection returned None (likely IoU rejection).")
-        mesh.texture = proj_out.uv_proj
+    #     if not uv_done:
+    #         v = mesh.v_pos
+    #         v_min, _ = torch.min(v, dim=0, keepdim=True)
+    #         v_max, _ = torch.max(v, dim=0, keepdim=True)
+    #         span = (v_max - v_min).clamp(min=1e-6)
+    #         uv_xy = (v[:, :2] - v_min[:, :2]) / span[:, :2]
+    #         mesh.v_tex = uv_xy.to(device)
+    #         mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
 
-        if debug_dump_uv:
-            uv_dir = output_dir / "uv_debug"
-            uv_dir.mkdir(parents=True, exist_ok=True)
-            tensor_to_image(proj_out.uv_proj).save(uv_dir / "uv_proj.png")
-            tensor_to_image(proj_out.uv_proj_mask).save(uv_dir / "uv_mask.png")
-            tensor_to_image(images_pt[0]).save(uv_dir / "input_view0.png")
-            print(f"uv_proj mean: {proj_out.uv_proj.mean().item():.6f}, mask mean: {proj_out.uv_proj_mask.float().mean().item():.6f}")
+    # if tp_out.uv_proj_rgb is None:
+    #     raise RuntimeError("TexturePipeline returned no RGB UV projection.")
+    # mesh.texture = tp_out.uv_proj_rgb.to(device)
 
-    # Recompute a tighter, stable depth range from camera positions and mesh bbox (similar to blender_export_depth)
+    if debug:
+        uv_dir = output_dir / "uv_debug"
+        uv_dir.mkdir(parents=True, exist_ok=True)
+        tensor_to_image(tp_out.uv_proj_rgb).save(uv_dir / "uv_proj.png")
+
     try:
         cam_pos = cam.c2w[:, :3, 3]
         v = mesh.v_pos[None]  # [1,N,3]
@@ -185,6 +170,7 @@ def project_and_render(
         # Mask only where texture was actually projected (nonzero RGB), not all geometry
         tex_mask = (rgb.abs().sum(-1) > 1e-6) & geo_mask
         rgb = torch.where(tex_mask[..., None], rgb, torch.zeros_like(rgb))
+        # rgb = torch.where(geo_mask, rgb, torch.zeros_like(rgb))
         depth = torch.where(geo_mask, render_out.depth[0], torch.ones_like(render_out.depth[0]))
         rgb_frames.append(rgb.cpu())
         depth_frames.append(depth.cpu())
@@ -235,7 +221,7 @@ def parse_args():
         help="Path to save/load exported camera trajectory from blend",
     )
     parser.add_argument(
-        "--debug-dump-uv",
+        "--debug",
         action="store_true",
         help="Dump uv_proj/uv_mask/input frame for debugging projection",
     )
@@ -243,11 +229,6 @@ def parse_args():
         "--axis-convert",
         action="store_true",
         help="Apply Blender->glTF axis conversion to camera matrices (enable only if views misaligned)",
-    )
-    parser.add_argument(
-        "--checker-test",
-        action="store_true",
-        help="Skip projection and render a checkerboard texture to verify UVs",
     )
     return parser.parse_args()
 
@@ -278,8 +259,7 @@ def main():
         ctx_type=args.ctx_type,
         camera_json=camera_json,
         axis_convert=args.axis_convert,
-        debug_dump_uv=args.debug_dump_uv,
-        checker_test=args.checker_test,
+        debug=args.debug,
     )
 
 

@@ -57,6 +57,7 @@ class ModProcessConfig:
 class TexturePipelineOutput:
     shaded_model_save_path: Optional[str] = None
     pbr_model_save_path: Optional[str] = None
+    uv_proj_rgb: Optional[torch.FloatTensor] = None
 
 class TexturePipeline:
     def __init__(
@@ -69,7 +70,10 @@ class TexturePipeline:
         self.device = device
         self.ctx = NVDiffRastContextWrapper(device=self.device, context_type=ctx_type)
         self.cam_proj = CameraProjection(
-            pb_backend="torch-cuda", bg_remover=None, device=self.device, context_type=ctx_type
+            pb_backend="torch-cuda",
+            bg_remover=None,
+            device=self.device,
+            context_type=ctx_type
         )
         if upscaler_ckpt_path is not None:
             self.upscaler = ModelLoader().load_from_file(upscaler_ckpt_path)
@@ -186,40 +190,42 @@ class TexturePipeline:
 
     def __call__(
         self,
-        mesh_path: str,
-        save_dir: str,
-        save_name: str = "default",
+        mesh_path: str, # 输入的3D网格模型路径
+        save_dir: str, # 输出结果保存目录
+        save_name: str = "default", # 输出文件的基本名称
         # mesh load settings
         move_to_center: bool = False,
-        front_x: bool = True,
-        keep_original_transform: bool = False,
+        front_x: bool = False, # 将模型的前方向从X轴调整为Y轴
+        keep_original_transform: bool = True,
         # uv unwarp
-        uv_unwarp: bool = False,
-        preprocess_mesh: bool = False,
+        uv_unwarp: bool = False, # 是否对UV贴图进行展开处理
+        preprocess_mesh: bool = False, # 是否对网格进行预处理
         # projection
         uv_size: int = 4096,
         # modes
-        rgb_path: Optional[str] = None,
+        rgb_path: Optional[str] = None, # RGB贴图路径
+        rgb_tensor: Optional[torch.FloatTensor] = None, # 直接传入的RGB张量
         rgb_process_config: ModProcessConfig = ModProcessConfig(),
-        base_color_path: Optional[str] = None,
+        base_color_path: Optional[str] = None, # 基础颜色贴图路径
         base_color_process_config: ModProcessConfig = ModProcessConfig(),
-        orm_path: Optional[str] = None,
+        orm_path: Optional[str] = None, # ORM贴图路径
         orm_process_config: ModProcessConfig = ModProcessConfig(),
-        normal_path: Optional[str] = None,
-        normal_strength: float = 1.0,
+        normal_path: Optional[str] = None, # 法线贴图路径
+        normal_strength: float = 1.0, # 法线贴图强度
         normal_process_config: ModProcessConfig = ModProcessConfig(),
         # inpaint
-        uv_inpaint_use_network: bool = False,
-        view_inpaint_include_occlusion_boundary: bool = False,
-        poisson_reprojection: bool = False,
+        uv_inpaint_use_network: bool = False, # 是否使用神经网络进行UV贴图修复
+        view_inpaint_include_occlusion_boundary: bool = False, # 视图修复是否包含遮挡边界
+        poisson_reprojection: bool = False, # 是否进行泊松重投影
         # camera
-        camera_projection_type: str = "ORTHO",
-        custom_camera_json: Optional[str] = None,
+        camera_projection_type: str = "ORTHO", # 相机投影类型，支持 "PERSP", "ORTHO", "CUSTOM"
+        custom_camera_json: Optional[str] = None, # 自定义相机参数的JSON文件路径
+        cameras_override: Optional[Union[Camera, List[Camera]]] = None, # 外部传入相机，跳过构建
         camera_elevation_deg: List[float] = [0, 0, 0, 0, 89.99, -89.99],
         camera_azimuth_deg: List[float] = [0, 90, 180, 270, 180, 180],
-        camera_distance: float = 1.0,
-        camera_ortho_scale: float = 1.1,
-        camera_fov_deg: float = 40,
+        camera_distance: float = 1.0, # 相机距离
+        camera_ortho_scale: float = 1.1, # 正交相机的缩放比例
+        camera_fov_deg: float = 40, # 透视相机的视场角
         # debug
         debug_mode: bool = False,
     ):
@@ -234,8 +240,8 @@ class TexturePipeline:
                 from mvadapter.utils.mesh_utils.mesh_process import process_raw
             except Exception as e:
                 raise ImportError(
-                    "uv_unwarp requested but mvadapter.utils.mesh_utils.mesh_process (pymeshlab) is unavailable. "
-                    "Install pymeshlab or disable uv_unwarp."
+                    "uv_unwarp 请求但是 mvadapter.utils.mesh_utils.mesh_process (pymeshlab) 不可用. "
+                    "安装 pymeshlab 或禁用 uv_unwarp."
                 ) from e
 
             file_suffix = os.path.splitext(mesh_path)[-1]
@@ -252,12 +258,56 @@ class TexturePipeline:
             device=self.device,
         )
 
+        # Ensure there is a texture tensor to blend into during projection
+        if mesh.texture is None:
+            mesh.texture = torch.zeros((uv_size, uv_size, 3), dtype=torch.float32, device=self.device)
+
+        # Fallback UVs if mesh lacks UV coordinates
+        if mesh.v_tex is None:
+            uv_done = False
+            try:
+                import xatlas  # type: ignore
+
+                v_np = mesh.v_pos.detach().cpu().numpy().astype(np.float32)
+                f_np = mesh.t_pos_idx.detach().cpu().numpy().astype(np.int32)
+                atlas = xatlas.Atlas()
+                atlas.add_mesh(v_np, f_np)
+                atlas.generate()
+                chart_uvs, _, _ = atlas.get_mesh(0)
+                uv = torch.from_numpy(chart_uvs[:, :2]).to(self.device)
+                uv_min, _ = torch.min(uv, dim=0, keepdim=True)
+                uv_max, _ = torch.max(uv, dim=0, keepdim=True)
+                uv = (uv - uv_min) / (uv_max - uv_min + 1e-8)
+                mesh.v_tex = uv
+                mesh.t_tex_idx = mesh.t_pos_idx.clone().to(self.device)
+                uv_done = True
+                if debug_mode:
+                    print("Fallback UV: generated with xatlas")
+            except Exception as e:
+                if debug_mode:
+                    print(f"Fallback UV: xatlas unwrap failed ({e}), using bbox planar XY.")
+
+            if not uv_done:
+                v = mesh.v_pos
+                v_min, _ = torch.min(v, dim=0, keepdim=True)
+                v_max, _ = torch.max(v, dim=0, keepdim=True)
+                span = (v_max - v_min).clamp(min=1e-6)
+                uv_xy = (v[:, :2] - v_min[:, :2]) / span[:, :2]
+                mesh.v_tex = uv_xy.to(self.device)
+                mesh.t_tex_idx = mesh.t_pos_idx.clone().to(self.device)
+
         # projection
         cameras = None
         custom_cam_cache = None
         custom_cam_data = None
-        expected_views = 6 if camera_projection_type == "ORTHO" else None
-        if camera_projection_type == "PERSP":
+        if cameras_override is not None:
+            cameras = cameras_override
+            expected_views = len(cameras_override) if hasattr(cameras_override, "__len__") else None
+        else:
+            expected_views = 6 if camera_projection_type == "ORTHO" else None
+        if cameras_override is not None:
+            pass
+        elif camera_projection_type == "PERSP":
             raise NotImplementedError
         elif camera_projection_type == "ORTHO":
             cameras = get_orthogonal_camera(
@@ -272,14 +322,14 @@ class TexturePipeline:
             )
         elif camera_projection_type == "CUSTOM":
             if custom_camera_json is None:
-                raise ValueError("CUSTOM camera requires custom_camera_json path.")
+                raise ValueError("CUSTOM camera 需要 custom_camera_json 参数.")
             import json
 
             with open(custom_camera_json, "r") as f:
                 custom_cam_data = json.load(f)
             expected_views = len(custom_cam_data)
         else:
-            raise ValueError(f"Unsupported camera_projection_type: {camera_projection_type}")
+            raise ValueError(f"不支持的相机投影类型: {camera_projection_type}")
 
         mod_kwargs = {
             "rgb": (rgb_path, rgb_process_config), # rgb贴图路径和处理配置
@@ -290,18 +340,28 @@ class TexturePipeline:
         mod_uv_image, mod_uv_tensor = {}, {}
         for mod_name, (mod_path, mod_process_config) in mod_kwargs.items():
             if mod_path is None:
-                mod_uv_image[mod_name] = None
-                mod_uv_tensor[mod_name] = None
-                continue
-            mod_images = self.load_packed_images(mod_path, num_views=expected_views)
-            mod_tensor = image_to_tensor(mod_images, device=self.device)
+                if mod_name == "rgb" and rgb_tensor is not None:
+                    # Normalize in-memory frames to [0,1] if needed
+                    mod_tensor = rgb_tensor
+                    if mod_tensor.dtype != torch.float32:
+                        mod_tensor = mod_tensor.to(torch.float32)
+                    max_val = mod_tensor.max().item()
+                    if max_val > 1.0:
+                        mod_tensor = (mod_tensor / 255.0).clamp(0.0, 1.0)
+                else:
+                    mod_uv_image[mod_name] = None
+                    mod_uv_tensor[mod_name] = None
+                    continue
+            else:
+                mod_images = self.load_packed_images(mod_path, num_views=expected_views)
+                mod_tensor = image_to_tensor(mod_images, device=self.device)
             mod_tensor = self.maybe_upscale_image(
                 mod_tensor,
                 mod_process_config.view_upscale,
                 mod_process_config.view_upscale_factor,
             )
             # Build custom cameras lazily when we know view count and aspect
-            if camera_projection_type == "CUSTOM" and custom_cam_cache is None:
+            if cameras_override is None and camera_projection_type == "CUSTOM" and custom_cam_cache is None:
                 H, W = mod_tensor.shape[1:3]
                 c2w_list, fov_list = [], []
                 for item in custom_cam_data:
@@ -514,4 +574,5 @@ class TexturePipeline:
         return TexturePipelineOutput(
             shaded_model_save_path=shaded_model_save_path,
             pbr_model_save_path=pbr_model_save_path,
+            uv_proj_rgb=mod_uv_tensor.get("rgb"),
         )

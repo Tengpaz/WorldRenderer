@@ -234,7 +234,7 @@ def main():
         rescale=False,
         move_to_center=False,
         default_uv_size=args.uv_size,
-        merge_vertices=True,
+        merge_vertices=True, # merge vertices to fix potential issues
         device=device,
     )
 

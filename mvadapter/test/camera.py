@@ -27,26 +27,26 @@ def export_camera_json(blend_path: Path, blender_bin: Path, json_path: Path) -> 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     script_path = json_path.parent / "_export_camera_tmp.py"
     script = """
-import bpy, json, math
-scene = bpy.context.scene
-cam = scene.camera
-if cam is None:
-    raise RuntimeError('No active camera in scene')
-data = []
-for f in range(scene.frame_start, scene.frame_end + 1):
-    scene.frame_set(f)
-    mw = cam.matrix_world
-    fov = cam.data.angle * 180.0 / math.pi
-    data.append({
-        'frame': int(f),
-        'fov_deg': float(fov),
-        'clip_start': float(cam.data.clip_start),
-        'clip_end': float(cam.data.clip_end),
-        'matrix_world': [[float(mw[i][j]) for j in range(4)] for i in range(4)]
-    })
-with open(r"JSON_PATH_PLACEHOLDER", 'w') as fp:
-    json.dump(data, fp)
-"""
+    import bpy, json, math
+    scene = bpy.context.scene
+    cam = scene.camera
+    if cam is None:
+        raise RuntimeError('No active camera in scene')
+    data = []
+    for f in range(scene.frame_start, scene.frame_end + 1):
+        scene.frame_set(f)
+        mw = cam.matrix_world
+        fov = cam.data.angle * 180.0 / math.pi
+        data.append({
+            'frame': int(f),
+            'fov_deg': float(fov),
+            'clip_start': float(cam.data.clip_start),
+            'clip_end': float(cam.data.clip_end),
+            'matrix_world': [[float(mw[i][j]) for j in range(4)] for i in range(4)]
+        })
+    with open(r"JSON_PATH_PLACEHOLDER", 'w') as fp:
+        json.dump(data, fp)
+    """
     script = script.replace("JSON_PATH_PLACEHOLDER", str(json_path))
     script_path.write_text(script)
     cmd = [
