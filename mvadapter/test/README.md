@@ -11,6 +11,7 @@ python -m mvadapter.test.pipeline \
   --max-frames 100 \
   --blender-bin ./blender/blender-5.0-linux-x64/blender \
   --output-dir mvadapter/test/output
+  --debug
 ```
 
 ## 图片投影测试

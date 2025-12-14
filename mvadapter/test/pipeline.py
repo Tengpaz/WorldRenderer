@@ -66,6 +66,7 @@ def project_and_render(
         front_x=False,
         keep_original_transform=True,
         uv_size=uv_size,
+        uv_unwarp=True,
         rgb_path="mvadapter/test/frames",
         rgb_tensor=None,
         rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
@@ -85,45 +86,18 @@ def project_and_render(
         device = device,
     )
 
-    # if mesh.v_tex is None:
-    #     uv_done = False
-    #     try:
-    #         import xatlas  # type: ignore
-
-    #         v_np = mesh.v_pos.detach().cpu().numpy().astype(np.float32)
-    #         f_np = mesh.t_pos_idx.detach().cpu().numpy().astype(np.int32)
-    #         atlas = xatlas.Atlas()
-    #         atlas.add_mesh(v_np, f_np)
-    #         atlas.generate()
-    #         chart_uvs, _, _ = atlas.get_mesh(0)
-    #         uv = torch.from_numpy(chart_uvs[:, :2]).to(device)
-    #         uv_min, _ = torch.min(uv, dim=0, keepdim=True)
-    #         uv_max, _ = torch.max(uv, dim=0, keepdim=True)
-    #         uv = (uv - uv_min) / (uv_max - uv_min + 1e-8)
-    #         mesh.v_tex = uv
-    #         mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
-    #         uv_done = True
-    #         if debug:
-    #             print("Fallback UV: generated with xatlas")
-    #     except Exception as e:
-    #         if debug:
-    #             print(f"Fallback UV: xatlas unwrap failed ({e}), using bbox planar XY.")
-
-    #     if not uv_done:
-    #         v = mesh.v_pos
-    #         v_min, _ = torch.min(v, dim=0, keepdim=True)
-    #         v_max, _ = torch.max(v, dim=0, keepdim=True)
-    #         span = (v_max - v_min).clamp(min=1e-6)
-    #         uv_xy = (v[:, :2] - v_min[:, :2]) / span[:, :2]
-    #         mesh.v_tex = uv_xy.to(device)
-    #         mesh.t_tex_idx = mesh.t_pos_idx.clone().to(device)
-
-    # if tp_out.uv_proj_rgb is None:
-    #     raise RuntimeError("TexturePipeline returned no RGB UV projection.")
-    # mesh.texture = tp_out.uv_proj_rgb.to(device)
+    # 将投影得到的 UV 纹理写回到 mesh 上
+    if tp_out.uv_proj_rgb is None:
+        raise RuntimeError("TexturePipeline returned no RGB UV projection.")
+    mesh.texture = tp_out.uv_proj_rgb.to(device)
+    # 使用投影时的 UV（与 uv_proj 对齐），避免 GLB 导出丢失或不匹配导致采样全黑
+    if hasattr(tp_out, "mesh_v_tex") and tp_out.mesh_v_tex is not None:
+        mesh.v_tex = tp_out.mesh_v_tex.to(device)
+    if hasattr(tp_out, "mesh_t_tex_idx") and tp_out.mesh_t_tex_idx is not None:
+        mesh.t_tex_idx = tp_out.mesh_t_tex_idx.to(device)
 
     if debug:
-        uv_dir = output_dir / "uv_debug"
+        uv_dir = output_dir / "debug"
         uv_dir.mkdir(parents=True, exist_ok=True)
         tensor_to_image(tp_out.uv_proj_rgb).save(uv_dir / "uv_proj.png")
 

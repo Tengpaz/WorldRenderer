@@ -58,6 +58,8 @@ class TexturePipelineOutput:
     shaded_model_save_path: Optional[str] = None
     pbr_model_save_path: Optional[str] = None
     uv_proj_rgb: Optional[torch.FloatTensor] = None
+    mesh_v_tex: Optional[torch.Tensor] = None
+    mesh_t_tex_idx: Optional[torch.Tensor] = None
 
 class TexturePipeline:
     def __init__(
@@ -258,44 +260,6 @@ class TexturePipeline:
             device=self.device,
         )
 
-        # Ensure there is a texture tensor to blend into during projection
-        if mesh.texture is None:
-            mesh.texture = torch.zeros((uv_size, uv_size, 3), dtype=torch.float32, device=self.device)
-
-        # Fallback UVs if mesh lacks UV coordinates
-        if mesh.v_tex is None:
-            uv_done = False
-            try:
-                import xatlas  # type: ignore
-
-                v_np = mesh.v_pos.detach().cpu().numpy().astype(np.float32)
-                f_np = mesh.t_pos_idx.detach().cpu().numpy().astype(np.int32)
-                atlas = xatlas.Atlas()
-                atlas.add_mesh(v_np, f_np)
-                atlas.generate()
-                chart_uvs, _, _ = atlas.get_mesh(0)
-                uv = torch.from_numpy(chart_uvs[:, :2]).to(self.device)
-                uv_min, _ = torch.min(uv, dim=0, keepdim=True)
-                uv_max, _ = torch.max(uv, dim=0, keepdim=True)
-                uv = (uv - uv_min) / (uv_max - uv_min + 1e-8)
-                mesh.v_tex = uv
-                mesh.t_tex_idx = mesh.t_pos_idx.clone().to(self.device)
-                uv_done = True
-                if debug_mode:
-                    print("Fallback UV: generated with xatlas")
-            except Exception as e:
-                if debug_mode:
-                    print(f"Fallback UV: xatlas unwrap failed ({e}), using bbox planar XY.")
-
-            if not uv_done:
-                v = mesh.v_pos
-                v_min, _ = torch.min(v, dim=0, keepdim=True)
-                v_max, _ = torch.max(v, dim=0, keepdim=True)
-                span = (v_max - v_min).clamp(min=1e-6)
-                uv_xy = (v[:, :2] - v_min[:, :2]) / span[:, :2]
-                mesh.v_tex = uv_xy.to(self.device)
-                mesh.t_tex_idx = mesh.t_pos_idx.clone().to(self.device)
-
         # projection
         cameras = None
         custom_cam_cache = None
@@ -456,15 +420,18 @@ class TexturePipeline:
                     mesh,
                     cameras,
                     from_scratch=mod_process_config.inpaint_mode != "none",
-                    poisson_blending=False,
-                    depth_grad_dilation=5,
-                    depth_grad_threshold=0.1,
-                    uv_exp_blend_alpha=3,
-                    uv_exp_blend_view_weight=view_weights,
-                    aoi_cos_valid_threshold=0.2,
-                    uv_size=uv_size,
-                    uv_padding=not uv_inpaint_use_network,
-                    return_dict=True,
+                    poisson_blending=False, # 设置是否使用泊松融合
+                    depth_grad_dilation=5, # 深度梯度膨胀参数
+                    # depth_grad_threshold=0.1, # 深度梯度阈值
+                    depth_grad_threshold=None, # 关闭深度梯度阈值
+                    uv_exp_blend_alpha=3, # UV扩展融合的alpha值
+                    uv_exp_blend_view_weight=view_weights, # 视图权重
+                    # aoi_cos_valid_threshold=0.2, # 有效视图的余弦阈值
+                    aoi_cos_valid_threshold=-1.0, # 关闭基于视角的有效性判断
+                    iou_rejection_threshold=None, # 关闭IOU拒绝阈值
+                    uv_size=uv_size, # UV贴图的大小
+                    uv_padding=not uv_inpaint_use_network, # 设置是否进行UV填充
+                    return_dict=True, # 返回结果为字典
                 )
                 uv_proj, uv_valid_mask, uv_depth_grad = (
                     cam_proj_out.uv_proj,
@@ -575,4 +542,6 @@ class TexturePipeline:
             shaded_model_save_path=shaded_model_save_path,
             pbr_model_save_path=pbr_model_save_path,
             uv_proj_rgb=mod_uv_tensor.get("rgb"),
+            mesh_v_tex=mesh.v_tex,
+            mesh_t_tex_idx=mesh.t_tex_idx,
         )
