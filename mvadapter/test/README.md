@@ -9,9 +9,34 @@ python -m mvadapter.test.pipeline \
   --uv-size 2048 \
   --frame-step 1 \
   --max-frames 100 \
-  --blender-bin ./blender/blender-5.0-linux-x64/blender \
-  --output-dir mvadapter/test/output
+  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --output-dir mvadapter/test/output5 \
   --debug
+```
+
+## 渲染测试
+
+```bash
+export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer
+python -m mvadapter.test.render_pipeline \
+  --device cuda \
+  --uv-size 2048 \
+  --frame-step 1 \
+  --max-frames 100 \
+  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --output-dir mvadapter/test/output5
+```
+
+## 导出相机视角轨迹
+
+```bash
+python -m mvadapter.test.export_camera \
+  --device cuda \
+  --uv-size 2048 \
+  --frame-step 1 \
+  --max-frames 100 \
+  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --output-dir mvadapter/test/output5
 ```
 
 ## 图片投影测试

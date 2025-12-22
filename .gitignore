@@ -1,8 +1,9 @@
 blender/
-mvadapter/test/output/
+mvadapter/test/output*/
 mvadapter/test/output_project
 mvadapter/test/renders
 mvadapter/test/frames
+mvadapter/test/photo
 mvadapter/test/*.mp4
 mvadapter/test/*.blend
 mvadapter/test/*.glb

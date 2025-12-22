@@ -1,9 +1,11 @@
 import argparse
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
+import PIL.Image as Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
@@ -21,9 +23,10 @@ from .camera import build_camera, export_camera_json, load_camera_from_json
 from .file import save_frames, save_depth_frames_16bit
 from .pipeline_texture import TexturePipeline, ModProcessConfig
 
-def project_and_render(
+def blend_render(
     mesh_path: Path,
     video_path: Path,
+    uv_path: Path,
     output_dir: Path,
     blender_bin: Path,
     device: str,
@@ -33,7 +36,6 @@ def project_and_render(
     pb_backend: str,
     ctx_type: str,
     camera_json: Path,
-    next_camera_json: Path,
     axis_convert: bool,
     debug: bool,
 ) -> None:
@@ -47,39 +49,25 @@ def project_and_render(
     cam_from_blend, clip_near, clip_far = load_camera_from_json(
         camera_json, height, width, device, num_views_all, axis_convert
     )
+
     num_views = min(num_views_all, len(cam_from_blend))
-    frames_np = frames_np[:num_views]
     cam = cam_from_blend[:num_views]
 
-    # Use TexturePipeline with in-memory frames and camera override (Option B)
-    images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
-    tp = TexturePipeline(
-        upscaler_ckpt_path=None,
-        inpaint_ckpt_path=None,
-        device=device,
-        ctx_type=ctx_type,
-    )
-    tp_out = tp(
-        mesh_path=str(glb_path),
-        save_dir=str(output_dir),
-        save_name="projected",
-        move_to_center=False,
-        front_x=False,
-        keep_original_transform=True,
-        uv_size=uv_size,
-        uv_unwarp=True,
-        # rgb_path="mvadapter/test/frames",
-        # rgb_path="mvadapter/test/photo",
-        rgb_tensor=images_pt,
-        rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
-        camera_projection_type="CUSTOM",
-        custom_camera_json=None,
-        cameras_override=cam,
-        debug_mode=debug,
-    )
+    try:
+        from mvadapter.utils.mesh_utils.mesh_process import process_raw
+    except Exception as e:
+        raise ImportError(
+            "uv_unwarp 请求但是 mvadapter.utils.mesh_utils.mesh_process (pymeshlab) 不可用. "
+            "安装 pymeshlab 或禁用 uv_unwarp."
+        ) from e
+
+    file_suffix = os.path.splitext(str(glb_path))[-1]
+    mesh_path_new = str(glb_path).replace(file_suffix, f"_unwarp{file_suffix}")
+    process_raw(str(glb_path), mesh_path_new, preprocess=False)
+    glb_path = Path(mesh_path_new)
 
     mesh = load_mesh(
-        mesh_path = tp_out.shaded_model_save_path if tp_out.shaded_model_save_path is not None else str(glb_path),
+        mesh_path = str(glb_path),
         rescale=False,
         move_to_center=False, # 设置是否将模型移动到中心
         front_x_to_y=False, # 设置是否将模型的前方向从X轴调整为Y轴
@@ -89,19 +77,11 @@ def project_and_render(
     )
 
     # 将投影得到的 UV 纹理写回到 mesh 上
-    if tp_out.uv_proj_rgb is None:
-        raise RuntimeError("TexturePipeline returned no RGB UV projection.")
-    mesh.texture = tp_out.uv_proj_rgb.to(device)
-    # 使用投影时的 UV（与 uv_proj 对齐），避免 GLB 导出丢失或不匹配导致采样全黑
-    if hasattr(tp_out, "mesh_v_tex") and tp_out.mesh_v_tex is not None:
-        mesh.v_tex = tp_out.mesh_v_tex.to(device)
-    if hasattr(tp_out, "mesh_t_tex_idx") and tp_out.mesh_t_tex_idx is not None:
-        mesh.t_tex_idx = tp_out.mesh_t_tex_idx.to(device)
-
-    if debug:
-        uv_dir = output_dir / "debug"
-        uv_dir.mkdir(parents=True, exist_ok=True)
-        tensor_to_image(tp_out.uv_proj_rgb).save(uv_dir / "uv_proj.png")
+    if uv_path is None:
+        raise RuntimeError("There are no RGB UV.")
+    uv_image = Image.open(uv_path).convert("RGB")
+    uv_tensor = torch.from_numpy(np.array(uv_image)).to(device=device) # / 255.0
+    mesh.texture = uv_tensor
 
     try:
         cam_pos = cam.c2w[:, :3, 3]
@@ -127,13 +107,6 @@ def project_and_render(
     )
 
     rgb_frames, depth_frames, mask_frames = [], [], []
-    # 如果提供了 next_camera_json，则使用其中的相机路径进行渲染
-    if next_camera_json.exists():
-        cam_from_blend, _, _ = load_camera_from_json(
-            next_camera_json, height, width, device, num_views_all, axis_convert
-        )
-        cam = cam_from_blend[:num_views]
-    # 使用相机路径渲染每一帧
     for i in range(num_views):
         cam_i = cam[i]
         render_out = render(
@@ -215,7 +188,6 @@ def parse_args():
     )
     return parser.parse_args()
 
-
 def main():
     args = parse_args()
     device = args.device
@@ -223,17 +195,17 @@ def main():
         raise RuntimeError("CUDA not available but device set to cuda.")
 
     test_dir = Path(__file__).resolve().parent
-    blend_path = test_dir / "town.blend"
-    # video_path = test_dir / "video.mp4"
+    blend_path = test_dir / "new_town.blend"
     video_path = test_dir / "town.mp4"
     output_dir = Path(args.output_dir)
+    uv_path = output_dir / "debug/uv_proj.png"
     blender_bin = Path(args.blender_bin)
     camera_json = test_dir / "camera_path.json"
-    next_camera_json = test_dir / "next_camera_path.json"
 
-    project_and_render(
+    blend_render(
         mesh_path=blend_path,
         video_path=video_path,
+        uv_path=uv_path,
         output_dir=output_dir,
         blender_bin=blender_bin,
         device=device,
@@ -243,7 +215,6 @@ def main():
         pb_backend=args.pb_backend,
         ctx_type=args.ctx_type,
         camera_json=camera_json,
-        next_camera_json=next_camera_json,
         axis_convert=args.axis_convert,
         debug=args.debug,
     )
