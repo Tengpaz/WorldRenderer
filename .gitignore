@@ -1,9 +1,13 @@
 blender/
 mvadapter/test/output*/
 mvadapter/test/output_project
+mvadapter/test/town_frames/
 mvadapter/test/renders
 mvadapter/test/frames
 mvadapter/test/photo
 mvadapter/test/*.mp4
 mvadapter/test/*.blend
 mvadapter/test/*.glb
+mvadapter/test/*.tar.gz
+mvadapter/test/__pycache__/
+__pycache__/

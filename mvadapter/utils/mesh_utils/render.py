@@ -253,7 +253,8 @@ def render(
             gb_depth,
             gb_depth.view(gb_depth.shape[0], -1).min(dim=-1)[0][:, None, None],
         )
-        gb_depth = depth_normalization_strategy(gb_depth, mask)
+        if depth_normalization_strategy is not None:
+            gb_depth = depth_normalization_strategy(gb_depth, mask)
         output_dict["depth"] = gb_depth
 
     if render_attr:

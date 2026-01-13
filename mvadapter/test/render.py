@@ -159,8 +159,6 @@ def project_and_render(
             ctx,
             mesh,
             cam_i,
-            # height=height,
-            # width=width,
             height=480,
             width=720,
             render_attr=True,

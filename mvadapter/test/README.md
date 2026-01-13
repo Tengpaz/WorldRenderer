@@ -10,7 +10,7 @@ python -m mvadapter.test.pipeline \
   --frame-step 1 \
   --max-frames 100 \
   --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
-  --output-dir mvadapter/test/output5 \
+  --output-dir mvadapter/test/output7 \
   --debug
 ```
 
@@ -25,6 +25,20 @@ python -m mvadapter.test.render_pipeline \
   --max-frames 100 \
   --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
   --output-dir mvadapter/test/output5
+```
+
+## 视角到视角的流水线测试
+
+```bash
+export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer
+python -m mvadapter.test.pipeline_view \
+  --device cuda \
+  --uv-size 4096 \
+  --frame-step 1 \
+  --max-frames 1 \
+  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --output-dir mvadapter/test/output6 \
+  --debug
 ```
 
 ## 导出相机视角轨迹

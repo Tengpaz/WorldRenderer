@@ -33,7 +33,6 @@ def project_and_render(
     pb_backend: str,
     ctx_type: str,
     camera_json: Path,
-    next_camera_json: Path,
     axis_convert: bool,
     debug: bool,
 ) -> None:
@@ -41,20 +40,15 @@ def project_and_render(
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
     export_camera_json(mesh_path, blender_bin, camera_json)
 
-    frames_np = load_frames(video_path, 0, frame_step, max_frames)
+    frames_np = load_frames(video_path, -1, frame_step, max_frames)
     num_views_all, height, width = frames_np.shape[:3]
 
-    print(f"Loaded {num_views_all} frames.")
-    print(f"height: {height}, width: {width}")
-
     cam_from_blend, clip_near, clip_far = load_camera_from_json(
-        camera_json, height, width, device, max_frames, axis_convert
+        camera_json, height, width, device, num_views_all + 1, axis_convert
     )
-
-    print(f"Loaded {len(cam_from_blend)} camera views.")
     num_views = min(num_views_all, len(cam_from_blend))
     frames_np = frames_np[:num_views]
-    cam = cam_from_blend[:num_views]
+    cam = cam_from_blend[:(num_views + 1)]
 
     # Use TexturePipeline with in-memory frames and camera override (Option B)
     images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
@@ -74,12 +68,12 @@ def project_and_render(
         uv_size=uv_size,
         uv_unwarp=True,
         # rgb_path="mvadapter/test/frames",
-        # rgb_path="mvadapter/test/photo",
+        # rgb_path="mvadapter/test/photo", # 使用单张图片进行投影
         rgb_tensor=images_pt,
         rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
         camera_projection_type="CUSTOM",
         custom_camera_json=None,
-        cameras_override=cam,
+        cameras_override=cam[:num_views],
         debug_mode=debug,
     )
 
@@ -124,48 +118,31 @@ def project_and_render(
         pass
 
     ctx = NVDiffRastContextWrapper(device=device, context_type=ctx_type)
-    # depth_norm = SimpleNormalization(
-    #     scale=1.0 / (clip_far - clip_near),
-    #     offset=-clip_near / (clip_far - clip_near),
-    #     clamp=True,
-    #     bg_value=1.0,
-    # )
-
-    # 按照100m归一化深度
-    norm_range = 30
     depth_norm = SimpleNormalization(
-        scale=1.0 / norm_range,
-        offset=0.0,
-        clamp=True, # 超过范围的深度值会被截断
+        scale=1.0 / (clip_far - clip_near),
+        offset=-clip_near / (clip_far - clip_near),
+        clamp=True,
         bg_value=1.0,
     )
 
-    # 存储clip_near和clip_far以供参考
-    with open(output_dir / "depth_clip.txt", "w") as f:
-        f.write(f"clip_near: {clip_near}\n")
-        f.write(f"clip_far: {clip_far}\n")
-
-    rgb_frames, depth_frames, normal_frames, mask_frames = [], [], [], []
-    # 如果提供了 next_camera_json，则使用其中的相机路径进行渲染
-    if next_camera_json != None and next_camera_json.exists():
-        cam_from_blend, _, _ = load_camera_from_json(
-            next_camera_json, height, width, device, num_views_all, axis_convert
+    rgb_frames, depth_frames, mask_frames = [], [], []
+    # 使用相机路径渲染每一帧（投影第 i 帧，渲染第 i+1 帧）
+    num_render = min(num_views, len(cam) - 1)
+    if num_render <= 0:
+        raise RuntimeError(
+            "Offset rendering requires at least 2 camera frames; got {}. Increase --max-frames or ensure Blender timeline has >=2 frames.".format(len(cam))
         )
-        cam = cam_from_blend[:num_views]
-    # 使用相机路径渲染每一帧
-    for i in range(num_views):
-        cam_i = cam[i]
+    for i in range(num_render):
+        cam_i = cam[i + 1]
         render_out = render(
             ctx,
             mesh,
             cam_i,
-            # height=height,
-            # width=width,
-            height=480,
-            width=720,
+            height=height,
+            width=width,
             render_attr=True,
             render_depth=True,
-            render_normal=True,
+            render_normal=False,
             depth_normalization_strategy=depth_norm,
             attr_background=0.0,
         )
@@ -176,15 +153,12 @@ def project_and_render(
         rgb = torch.where(tex_mask[..., None], rgb, torch.zeros_like(rgb))
         # rgb = torch.where(geo_mask, rgb, torch.zeros_like(rgb))
         depth = torch.where(geo_mask, render_out.depth[0], torch.ones_like(render_out.depth[0]))
-        normal = render_out.normal[0]
         rgb_frames.append(rgb.cpu())
         depth_frames.append(depth.cpu())
-        normal_frames.append(normal.cpu())
         mask_frames.append(tex_mask.cpu())
 
     save_frames(rgb_frames, output_dir / "rgb", "rgb")
     save_depth_frames_16bit(depth_frames, output_dir / "depth", "depth")
-    save_frames(normal_frames, output_dir / "normal", "normal")
     save_frames(mask_frames, output_dir / "mask", "mask")
 
 def parse_args():
@@ -253,7 +227,6 @@ def main():
     output_dir = Path(args.output_dir)
     blender_bin = Path(args.blender_bin)
     camera_json = test_dir / "camera_path.json"
-    # next_camera_json = test_dir / "next_camera_path.json"
 
     project_and_render(
         mesh_path=blend_path,
@@ -267,7 +240,6 @@ def main():
         pb_backend=args.pb_backend,
         ctx_type=args.ctx_type,
         camera_json=camera_json,
-        next_camera_json=None,
         axis_convert=args.axis_convert,
         debug=args.debug,
     )
