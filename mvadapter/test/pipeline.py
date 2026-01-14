@@ -45,6 +45,8 @@ def project_and_render(
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
     export_camera_json(mesh_path, blender_bin, camera_json)
 
+    video_frame_height, video_frame_width = height, width
+    num_views_all = max_frames if max_frames > 0 else 1
     if ifproject:
         frames_np = load_frames(video_path, 0, frame_step, max_frames)
         num_views_all, video_frame_height, video_frame_width = frames_np.shape[:3]
