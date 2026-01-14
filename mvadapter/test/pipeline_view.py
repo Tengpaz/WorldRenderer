@@ -2,7 +2,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,11 +14,11 @@ from mvadapter.utils.mesh_utils.render import (
     render,
 )
 from mvadapter.utils.mesh_utils.utils import tensor_to_image
-from .glb import export_blend_to_glb
-from .video import load_frames
-from .camera import build_camera, export_camera_json, load_camera_from_json
-from .file import save_frames, save_depth_frames_16bit
-from .pipeline_texture import TexturePipeline, ModProcessConfig
+from .utils.glb import export_blend_to_glb
+from .utils.video import load_frames
+from .utils.camera import export_camera_json, load_camera_from_json
+from .utils.file import save_frames, save_depth_frames_16bit
+from .utils.pipeline_texture import TexturePipeline, ModProcessConfig
 
 def project_and_render(
     mesh_path: Path,

@@ -2,7 +2,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,11 +14,11 @@ from mvadapter.utils.mesh_utils.render import (
     render,
 )
 from mvadapter.utils.mesh_utils.utils import tensor_to_image
-from .glb import export_blend_to_glb
-from .video import load_frames
-from .camera import build_camera, export_camera_json, load_camera_from_json
-from .file import save_frames, save_depth_frames_16bit
-from .pipeline_texture import TexturePipeline, ModProcessConfig
+from .utils.glb import export_blend_to_glb
+from .utils.video import load_frames
+from .utils.camera import export_camera_json, load_camera_from_json
+from .utils.file import save_frames, save_depth_frames_16bit
+from .utils.pipeline_texture import TexturePipeline, ModProcessConfig
 
 def project_and_render(
     mesh_path: Path,
@@ -30,28 +29,23 @@ def project_and_render(
     uv_size: int,
     frame_step: int,
     max_frames: int,
-    pb_backend: str,
     ctx_type: str,
-    camera_json: Path,
     next_camera_json: Path,
     axis_convert: bool,
     debug: bool,
 ) -> None:
     glb_path = mesh_path.with_suffix(".glb")
+    camera_json = mesh_path.with_suffix("_camera_path.json")
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
     export_camera_json(mesh_path, blender_bin, camera_json)
 
     frames_np = load_frames(video_path, 0, frame_step, max_frames)
     num_views_all, height, width = frames_np.shape[:3]
 
-    print(f"Loaded {num_views_all} frames.")
-    print(f"height: {height}, width: {width}")
-
     cam_from_blend, clip_near, clip_far = load_camera_from_json(
         camera_json, height, width, device, max_frames, axis_convert
     )
 
-    print(f"Loaded {len(cam_from_blend)} camera views.")
     num_views = min(num_views_all, len(cam_from_blend))
     frames_np = frames_np[:num_views]
     cam = cam_from_blend[:num_views]
@@ -64,24 +58,42 @@ def project_and_render(
         device=device,
         ctx_type=ctx_type,
     )
-    tp_out = tp(
-        mesh_path=str(glb_path),
-        save_dir=str(output_dir),
-        save_name="projected",
-        move_to_center=False,
-        front_x=False,
-        keep_original_transform=True,
-        uv_size=uv_size,
-        uv_unwarp=True,
-        # rgb_path="mvadapter/test/frames",
-        # rgb_path="mvadapter/test/photo",
-        rgb_tensor=images_pt,
-        rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
-        camera_projection_type="CUSTOM",
-        custom_camera_json=None,
-        cameras_override=cam,
-        debug_mode=debug,
-    )
+    
+    if video_path.suffix.lower() in [".mp4"]: # Use in-memory frames for video input
+        tp_out = tp(
+            mesh_path=str(glb_path),
+            save_dir=str(output_dir),
+            save_name="projected",
+            move_to_center=False,
+            front_x=False,
+            keep_original_transform=True,
+            uv_size=uv_size,
+            uv_unwarp=True,
+            rgb_tensor=images_pt,
+            rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
+            camera_projection_type="CUSTOM",
+            custom_camera_json=None,
+            cameras_override=cam,
+            debug_mode=debug,
+        )
+    else:
+        tp_out = tp(
+            mesh_path=str(glb_path),
+            save_dir=str(output_dir),
+            save_name="projected",
+            move_to_center=False,
+            front_x=False,
+            keep_original_transform=True,
+            uv_size=uv_size,
+            uv_unwarp=True,
+            rgb_path=str(video_path),
+            rgb_tensor=None,
+            rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
+            camera_projection_type="CUSTOM",
+            custom_camera_json=None,
+            cameras_override=cam,
+            debug_mode=debug,
+        )
 
     mesh = load_mesh(
         mesh_path = tp_out.shaded_model_save_path if tp_out.shaded_model_save_path is not None else str(glb_path),
@@ -124,20 +136,14 @@ def project_and_render(
         pass
 
     ctx = NVDiffRastContextWrapper(device=device, context_type=ctx_type)
-    # depth_norm = SimpleNormalization(
-    #     scale=1.0 / (clip_far - clip_near),
-    #     offset=-clip_near / (clip_far - clip_near),
-    #     clamp=True,
-    #     bg_value=1.0,
-    # )
 
-    # 按照100m归一化深度
-    norm_range = 30
+    # 单位为mm的深度归一化
+    norm_range = 65.535
     depth_norm = SimpleNormalization(
         scale=1.0 / norm_range,
         offset=0.0,
         clamp=True, # 超过范围的深度值会被截断
-        bg_value=1.0,
+        bg_value=1.0, # 背景深度值设为1.0（即最大深度）
     )
 
     # 存储clip_near和clip_far以供参考
@@ -159,10 +165,10 @@ def project_and_render(
             ctx,
             mesh,
             cam_i,
-            # height=height,
-            # width=width,
-            height=480,
-            width=720,
+            height=height,
+            width=width,
+            # height=480,
+            # width=720,
             render_attr=True,
             render_depth=True,
             render_normal=True,
@@ -203,13 +209,6 @@ def parse_args():
         help="nvdiffrast context type; use cuda if EGL/GL is unavailable",
     )
     parser.add_argument(
-        "--pb-backend",
-        type=str,
-        default="torch-native",
-        choices=["torch-native", "torch-cuda", "triton"],
-        help="Poisson blending backend; 'torch-native' is pure PyTorch (no ninja).",
-    )
-    parser.add_argument(
         "--blender-bin",
         type=str,
         default=str(ROOT / "blender" / "blender-5.0.0-linux-x64" / "blender"),
@@ -237,6 +236,30 @@ def parse_args():
         action="store_true",
         help="Apply Blender->glTF axis conversion to camera matrices (enable only if views misaligned)",
     )
+    parser.add_argument(
+        "--blend_path",
+        type=str,
+        default="",
+        help="Path to the .blend file to process (overrides default town.blend)",
+    )
+    parser.add_argument(
+        "--camera-json",
+        type=str,
+        default="",
+        help="Path to save/load exported camera trajectory from blend",
+    )
+    parser.add_argument(
+        "--video-path",
+        type=str,
+        default="",
+        help="Path to the input video file (overrides default town.mp4)",
+    )
+    parser.add_argument(
+        "--next-camera-json",
+        type=str,
+        default="",
+        help="Path to the next camera trajectory json for rendering (optional)",
+    )
     return parser.parse_args()
 
 
@@ -247,13 +270,11 @@ def main():
         raise RuntimeError("CUDA not available but device set to cuda.")
 
     test_dir = Path(__file__).resolve().parent
-    blend_path = test_dir / "town.blend"
-    # video_path = test_dir / "video.mp4"
-    video_path = test_dir / "town.mp4"
+    blend_path = Path(args.blend_path) if args.blend_path else test_dir / "town.blend"
+    video_path = Path(args.video_path) if args.video_path else test_dir / "video.mp4"
     output_dir = Path(args.output_dir)
     blender_bin = Path(args.blender_bin)
-    camera_json = test_dir / "camera_path.json"
-    # next_camera_json = test_dir / "next_camera_path.json"
+    next_camera_json = Path(args.next_camera_json) if args.next_camera_json else None
 
     project_and_render(
         mesh_path=blend_path,
@@ -264,14 +285,11 @@ def main():
         uv_size=args.uv_size,
         frame_step=max(1, args.frame_step),
         max_frames=args.max_frames,
-        pb_backend=args.pb_backend,
         ctx_type=args.ctx_type,
-        camera_json=camera_json,
-        next_camera_json=None,
+        next_camera_json=next_camera_json, # 如果使用下一个相机路径渲染，则设置 next_camera_json
         axis_convert=args.axis_convert,
         debug=args.debug,
     )
-
 
 if __name__ == "__main__":
     main()

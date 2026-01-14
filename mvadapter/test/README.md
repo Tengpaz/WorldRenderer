@@ -1,31 +1,30 @@
-# 推理框架
+# 渲染器
 
-## 流水线测试
+## 指定blend文件、视频帧生成导出对应的数据图像
 
 ```bash
-export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer
+export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer # 指向项目根目录
 python -m mvadapter.test.pipeline \
   --device cuda \
   --uv-size 2048 \
   --frame-step 1 \
   --max-frames 100 \
   --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --blend-path mvadapter/test/town.blend \
+  --video-path mvadapter/test/video.mp4 \
   --output-dir mvadapter/test/output7 \
   --debug
 ```
 
-## 渲染测试
+导出的depth和normal默认是按照给的视频帧的分辨率导出
 
-```bash
-export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer
-python -m mvadapter.test.render_pipeline \
-  --device cuda \
-  --uv-size 2048 \
-  --frame-step 1 \
-  --max-frames 100 \
-  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
-  --output-dir mvadapter/test/output5
-```
+- uv-size: 贴图分辨率
+- frame-step: 帧步长
+- max-frames: 最大生成帧数
+- blender-bin: blender路径
+- blend-path: blend文件路径
+- video-path: 视频或视频帧所在目录路径
+- output-dir: 输出目录
 
 ## 视角到视角的流水线测试
 
@@ -53,48 +52,21 @@ python -m mvadapter.test.export_camera \
   --output-dir mvadapter/test/output5
 ```
 
-## 图片投影测试
+## 文件说明
 
-在项目根目录下
+项目结构
 
-```bash
-/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer/blender/blender-5.0.0-linux-x64/blender -b -P mvadapter/test/project_glb_with_cameras.py -- \
-  --input_glb mvadapter/test/town.glb \
-  --camera_json mvadapter/test/camera_path.json \
-  --images mvadapter/test/frames \
-  --output_glb mvadapter/test/projected_town.glb \
-  --pack
 ```
-
-## 图片渲染测试
-
-在项目根目录下
-
-```bash
-/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer/blender/blender-5.0.0-linux-x64/blender mvadapter/test/town.blend -b -P mvadapter/test/render_cameras_from_glb.py -- \
-  --glb mvadapter/test/projected_town.glb \
-  --camera_json mvadapter/test/camera_path.json \
-  --output_dir mvadapter/test/renders \
-  --output_prefix view_rgb_ \
-  --resolution 720 480 \
-  --engine CYCLES \
-  --cycles_samples 64
-```
-
-无显示环境下
-
-```bash
-LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -s "-screen 0 1024x768x24" \
-/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer/blender/blender-5.0.0-linux-x64/blender \
-  mvadapter/test/town.blend -b -P mvadapter/test/render_cameras_from_glb.py -- \
-  --glb mvadapter/test/projected_town.glb \
-  --camera_json mvadapter/test/camera_path.json \
-  --output_dir mvadapter/test/renders \
-  --output_prefix view_rgb_ \
-  --resolution 720 480 \
-  --engine BLENDER_EEVEE \
-  --cycles_samples 1 \
-  --clear_scene \
-  --sun --sun_strength 3.0 \
-  --world_color 0.1 0.1 0.1
+mvadapter
+- test/
+  - pipeline.py # 导出depth normal rgb
+  - pipeline_view.py # 单视角到单视角的反投渲染（废弃，已改为使用点云）
+  - export_camera.py # 导出相机轨迹，用于调试
+  - utils/ # 工具函数
+- utils/
+  - mesh_utils/
+   - mesh.py
+   - utils.py
+   - render.py
+   - camera.py
 ```
