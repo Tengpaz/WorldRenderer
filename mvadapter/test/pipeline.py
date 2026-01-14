@@ -35,7 +35,7 @@ def project_and_render(
     debug: bool,
 ) -> None:
     glb_path = mesh_path.with_suffix(".glb")
-    camera_json = mesh_path.with_suffix("_camera_path.json")
+    camera_json = output_dir / "camera.json"
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
     export_camera_json(mesh_path, blender_bin, camera_json)
 
@@ -146,11 +146,6 @@ def project_and_render(
         bg_value=1.0, # 背景深度值设为1.0（即最大深度）
     )
 
-    # 存储clip_near和clip_far以供参考
-    with open(output_dir / "depth_clip.txt", "w") as f:
-        f.write(f"clip_near: {clip_near}\n")
-        f.write(f"clip_far: {clip_far}\n")
-
     rgb_frames, depth_frames, normal_frames, mask_frames = [], [], [], []
     # 如果提供了 next_camera_json，则使用其中的相机路径进行渲染
     if next_camera_json != None and next_camera_json.exists():
@@ -221,12 +216,6 @@ def parse_args():
         help="Directory to save rgb/depth/mask frames (stays inside test dir)",
     )
     parser.add_argument(
-        "--camera-json",
-        type=str,
-        default=str(Path(__file__).resolve().parent / "camera_path.json"),
-        help="Path to save/load exported camera trajectory from blend",
-    )
-    parser.add_argument(
         "--debug",
         action="store_true",
         help="Dump uv_proj/uv_mask/input frame for debugging projection",
@@ -237,16 +226,10 @@ def parse_args():
         help="Apply Blender->glTF axis conversion to camera matrices (enable only if views misaligned)",
     )
     parser.add_argument(
-        "--blend_path",
+        "--blend-path",
         type=str,
         default="",
         help="Path to the .blend file to process (overrides default town.blend)",
-    )
-    parser.add_argument(
-        "--camera-json",
-        type=str,
-        default="",
-        help="Path to save/load exported camera trajectory from blend",
     )
     parser.add_argument(
         "--video-path",

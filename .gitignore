@@ -10,4 +10,7 @@ mvadapter/test/*.blend
 mvadapter/test/*.glb
 mvadapter/test/*.tar.gz
 mvadapter/test/__pycache__/
-__pycache__/
+mvadapter/test/camera_path.json
+mvadapter/test/next_camera_path.json
+*/**/__pycache__/
+mvadapter/utils/mesh_utils/__pycache__/

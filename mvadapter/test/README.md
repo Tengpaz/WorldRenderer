@@ -12,7 +12,7 @@ python -m mvadapter.test.pipeline \
   --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
   --blend-path mvadapter/test/town.blend \
   --video-path mvadapter/test/video.mp4 \
-  --output-dir mvadapter/test/output7 \
+  --output-dir mvadapter/test/output \
   --debug
 ```
 
