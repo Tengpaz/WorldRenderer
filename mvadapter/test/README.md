@@ -26,6 +26,23 @@ python -m mvadapter.test.pipeline \
 - video-path: 视频或视频帧所在目录路径
 - output-dir: 输出目录
 
+## 从blend导出depth和nornal数据
+
+```bash
+export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer # 指向项目根目录
+python -m mvadapter.test.pipeline \
+  --device cuda \
+  --uv-size 2048 \
+  --frame-step 1 \
+  --max-frames 100 \
+  --height 480 \
+  --width 720 \
+  --blender-bin ./blender/blender-5.0.0-linux-x64/blender \
+  --blend-path mvadapter/test/town.blend \
+  --output-dir mvadapter/test/output \
+  --debug
+```
+
 ## 视角到视角的流水线测试
 
 ```bash

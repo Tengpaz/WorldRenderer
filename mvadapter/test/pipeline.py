@@ -1,5 +1,6 @@
 import argparse
 import sys
+import os
 from pathlib import Path
 
 import torch
@@ -24,6 +25,8 @@ def project_and_render(
     mesh_path: Path,
     video_path: Path,
     output_dir: Path,
+    height: int,
+    width: int,
     blender_bin: Path,
     device: str,
     uv_size: int,
@@ -34,24 +37,28 @@ def project_and_render(
     axis_convert: bool,
     debug: bool,
 ) -> None:
+    ifproject = True
+    if video_path is None:
+        ifproject = False
     glb_path = mesh_path.with_suffix(".glb")
     camera_json = output_dir / "camera.json"
     export_blend_to_glb(mesh_path, glb_path, blender_bin)
     export_camera_json(mesh_path, blender_bin, camera_json)
 
-    frames_np = load_frames(video_path, 0, frame_step, max_frames)
-    num_views_all, height, width = frames_np.shape[:3]
+    if ifproject:
+        frames_np = load_frames(video_path, 0, frame_step, max_frames)
+        num_views_all, video_frame_height, video_frame_width = frames_np.shape[:3]
 
     cam_from_blend, clip_near, clip_far = load_camera_from_json(
-        camera_json, height, width, device, max_frames, axis_convert
+        camera_json, video_frame_height, video_frame_width, device, max_frames, axis_convert
     )
 
     num_views = min(num_views_all, len(cam_from_blend))
-    frames_np = frames_np[:num_views]
+    if ifproject:
+        frames_np = frames_np[:num_views]
     cam = cam_from_blend[:num_views]
 
     # Use TexturePipeline with in-memory frames and camera override (Option B)
-    images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
     tp = TexturePipeline(
         upscaler_ckpt_path=None,
         inpaint_ckpt_path=None,
@@ -59,66 +66,91 @@ def project_and_render(
         ctx_type=ctx_type,
     )
     
-    if video_path.suffix.lower() in [".mp4"]: # Use in-memory frames for video input
-        tp_out = tp(
-            mesh_path=str(glb_path),
-            save_dir=str(output_dir),
-            save_name="projected",
-            move_to_center=False,
-            front_x=False,
-            keep_original_transform=True,
-            uv_size=uv_size,
-            uv_unwarp=True,
-            rgb_tensor=images_pt,
-            rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
-            camera_projection_type="CUSTOM",
-            custom_camera_json=None,
-            cameras_override=cam,
-            debug_mode=debug,
+    if ifproject:
+        if video_path.suffix.lower() in [".mp4"]: # Use in-memory frames for video input
+            images_pt = torch.tensor(frames_np, device=device, dtype=torch.float32)
+            tp_out = tp(
+                mesh_path=str(glb_path),
+                save_dir=str(output_dir),
+                save_name="projected",
+                move_to_center=False,
+                front_x=False,
+                keep_original_transform=True,
+                uv_size=uv_size,
+                uv_unwarp=True,
+                rgb_tensor=images_pt,
+                rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
+                camera_projection_type="CUSTOM",
+                custom_camera_json=None,
+                cameras_override=cam,
+                debug_mode=debug,
+            )
+        else:
+            tp_out = tp(
+                mesh_path=str(glb_path),
+                save_dir=str(output_dir),
+                save_name="projected",
+                move_to_center=False,
+                front_x=False,
+                keep_original_transform=True,
+                uv_size=uv_size,
+                uv_unwarp=True,
+                rgb_path=str(video_path),
+                rgb_tensor=None,
+                rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
+                camera_projection_type="CUSTOM",
+                custom_camera_json=None,
+                cameras_override=cam,
+                debug_mode=debug,
+            )
+
+        mesh = load_mesh(
+            mesh_path = tp_out.shaded_model_save_path if tp_out.shaded_model_save_path is not None else str(glb_path),
+            rescale=False,
+            move_to_center=False, # 设置是否将模型移动到中心
+            front_x_to_y=False, # 设置是否将模型的前方向从X轴调整为Y轴
+            default_uv_size=uv_size, # 设置默认的UV贴图大小
+            merge_vertices=True, # 合并顶点以修复潜在问题
+            device = device,
         )
+
+        # 将投影得到的 UV 纹理写回到 mesh 上
+        if tp_out.uv_proj_rgb is None:
+            raise RuntimeError("TexturePipeline returned no RGB UV projection.")
+        mesh.texture = tp_out.uv_proj_rgb.to(device)
+        # 使用投影时的 UV（与 uv_proj 对齐），避免 GLB 导出丢失或不匹配导致采样全黑
+        if hasattr(tp_out, "mesh_v_tex") and tp_out.mesh_v_tex is not None:
+            mesh.v_tex = tp_out.mesh_v_tex.to(device)
+        if hasattr(tp_out, "mesh_t_tex_idx") and tp_out.mesh_t_tex_idx is not None:
+            mesh.t_tex_idx = tp_out.mesh_t_tex_idx.to(device)
+
+        if debug:
+            uv_dir = output_dir / "debug"
+            uv_dir.mkdir(parents=True, exist_ok=True)
+            tensor_to_image(tp_out.uv_proj_rgb).save(uv_dir / "uv_proj.png")
     else:
-        tp_out = tp(
-            mesh_path=str(glb_path),
-            save_dir=str(output_dir),
-            save_name="projected",
-            move_to_center=False,
-            front_x=False,
-            keep_original_transform=True,
-            uv_size=uv_size,
-            uv_unwarp=True,
-            rgb_path=str(video_path),
-            rgb_tensor=None,
-            rgb_process_config=ModProcessConfig(inpaint_mode="uv"),
-            camera_projection_type="CUSTOM",
-            custom_camera_json=None,
-            cameras_override=cam,
-            debug_mode=debug,
+        try:
+            from mvadapter.utils.mesh_utils.mesh_process import process_raw
+        except Exception as e:
+            raise ImportError(
+                "uv_unwarp 请求但是 mvadapter.utils.mesh_utils.mesh_process (pymeshlab) 不可用. "
+                "安装 pymeshlab 或禁用 uv_unwarp."
+            ) from e
+
+        mesh_path = str(glb_path)
+        file_suffix = os.path.splitext(mesh_path)[-1]
+        mesh_path_new = mesh_path.replace(file_suffix, f"_unwarp{file_suffix}")
+        process_raw(mesh_path, mesh_path_new, preprocess=False)
+        mesh_path = mesh_path_new
+        mesh = load_mesh(
+            mesh_path = mesh_path,
+            rescale=False,
+            move_to_center=False, # 设置是否将模型移动到中心
+            front_x_to_y=False, # 设置是否将模型的前方向从X轴调整为Y轴
+            default_uv_size=uv_size, # 设置默认的UV贴图大小
+            merge_vertices=True, # 合并顶点以修复潜在问题
+            device = device,
         )
-
-    mesh = load_mesh(
-        mesh_path = tp_out.shaded_model_save_path if tp_out.shaded_model_save_path is not None else str(glb_path),
-        rescale=False,
-        move_to_center=False, # 设置是否将模型移动到中心
-        front_x_to_y=False, # 设置是否将模型的前方向从X轴调整为Y轴
-        default_uv_size=uv_size, # 设置默认的UV贴图大小
-        merge_vertices=True, # 合并顶点以修复潜在问题
-        device = device,
-    )
-
-    # 将投影得到的 UV 纹理写回到 mesh 上
-    if tp_out.uv_proj_rgb is None:
-        raise RuntimeError("TexturePipeline returned no RGB UV projection.")
-    mesh.texture = tp_out.uv_proj_rgb.to(device)
-    # 使用投影时的 UV（与 uv_proj 对齐），避免 GLB 导出丢失或不匹配导致采样全黑
-    if hasattr(tp_out, "mesh_v_tex") and tp_out.mesh_v_tex is not None:
-        mesh.v_tex = tp_out.mesh_v_tex.to(device)
-    if hasattr(tp_out, "mesh_t_tex_idx") and tp_out.mesh_t_tex_idx is not None:
-        mesh.t_tex_idx = tp_out.mesh_t_tex_idx.to(device)
-
-    if debug:
-        uv_dir = output_dir / "debug"
-        uv_dir.mkdir(parents=True, exist_ok=True)
-        tensor_to_image(tp_out.uv_proj_rgb).save(uv_dir / "uv_proj.png")
 
     try:
         cam_pos = cam.c2w[:, :3, 3]
@@ -150,7 +182,7 @@ def project_and_render(
     # 如果提供了 next_camera_json，则使用其中的相机路径进行渲染
     if next_camera_json != None and next_camera_json.exists():
         cam_from_blend, _, _ = load_camera_from_json(
-            next_camera_json, height, width, device, num_views_all, axis_convert
+            next_camera_json, video_frame_height, video_frame_width, device, num_views_all, axis_convert
         )
         cam = cam_from_blend[:num_views]
     # 使用相机路径渲染每一帧
@@ -160,10 +192,8 @@ def project_and_render(
             ctx,
             mesh,
             cam_i,
-            height=height,
-            width=width,
-            # height=480,
-            # width=720,
+            height=height if height is not None else video_frame_height,
+            width=width if width is not None else video_frame_width,
             render_attr=True,
             render_depth=True,
             render_normal=True,
@@ -183,10 +213,11 @@ def project_and_render(
         normal_frames.append(normal.cpu())
         mask_frames.append(tex_mask.cpu())
 
-    save_frames(rgb_frames, output_dir / "rgb", "rgb")
+    if ifproject:
+        save_frames(rgb_frames, output_dir / "rgb", "rgb")
+        save_frames(mask_frames, output_dir / "mask", "mask")
     save_depth_frames_16bit(depth_frames, output_dir / "depth", "depth")
     save_frames(normal_frames, output_dir / "normal", "normal")
-    save_frames(mask_frames, output_dir / "mask", "mask")
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -228,20 +259,27 @@ def parse_args():
     parser.add_argument(
         "--blend-path",
         type=str,
-        default="",
         help="Path to the .blend file to process (overrides default town.blend)",
     )
     parser.add_argument(
         "--video-path",
         type=str,
-        default="",
         help="Path to the input video file (overrides default town.mp4)",
     )
     parser.add_argument(
         "--next-camera-json",
         type=str,
-        default="",
         help="Path to the next camera trajectory json for rendering (optional)",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        help="Height of the rendered frames",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        help="Width of the rendered frames",
     )
     return parser.parse_args()
 
@@ -254,7 +292,7 @@ def main():
 
     test_dir = Path(__file__).resolve().parent
     blend_path = Path(args.blend_path) if args.blend_path else test_dir / "town.blend"
-    video_path = Path(args.video_path) if args.video_path else test_dir / "video.mp4"
+    video_path = Path(args.video_path) if args.video_path else None
     output_dir = Path(args.output_dir)
     blender_bin = Path(args.blender_bin)
     next_camera_json = Path(args.next_camera_json) if args.next_camera_json else None
@@ -263,6 +301,8 @@ def main():
         mesh_path=blend_path,
         video_path=video_path,
         output_dir=output_dir,
+        height=args.height,
+        width=args.width,
         blender_bin=blender_bin,
         device=device,
         uv_size=args.uv_size,
