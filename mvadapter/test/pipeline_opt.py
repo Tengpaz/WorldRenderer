@@ -20,6 +20,7 @@ from .utils.video import load_frames
 from .utils.camera import export_camera_json, load_camera_from_json
 from .utils.file import save_frames, save_depth_frames_16bit
 from .utils.pipeline_texture import TexturePipeline, ModProcessConfig
+from .utils.keyframe import get_keyframes
 
 def project_and_render(
     mesh_path: Path,
@@ -32,6 +33,7 @@ def project_and_render(
     uv_size: int,
     frame_step: int,
     max_frames: int,
+    # camera_step: int,
     ctx_type: str,
     next_camera_json: Path,
     axis_convert: bool,
@@ -62,6 +64,28 @@ def project_and_render(
     if ifproject:
         frames_np = frames_np[:num_views]
     cam = cam_from_blend[:num_views]
+    # cam = cam[::camera_step]
+    num_views = len(cam)
+    keyframes = get_keyframes(camera_json, num_views, t_position=0.20, t_rotation=0.5)
+    # if ifproject:
+        # frames_np = frames_np[::camera_step]
+    # keep only keyframes
+    # ensure keyframe indices are on CPU and within valid range before indexing
+    print(f"Original number of cameras: {len(cam)}")
+    print(f"Extracted {len(keyframes)} keyframes.")
+    if isinstance(keyframes, torch.Tensor):
+        key_idx = keyframes.cpu().tolist()
+    else:
+        key_idx = list(keyframes)
+    # keep only indices that are within [0, len(cam))
+    key_idx = [int(i) for i in key_idx if 0 <= int(i) < len(cam)]
+    if len(key_idx) == 0:
+        raise RuntimeError(f"No valid keyframes found within camera range (0..{max(0, len(cam)-1)}).")
+    # print(f"Keyframe indices: {key_idx}")
+    cam = cam[key_idx]
+    if ifproject:
+        frames_np = frames_np[key_idx]
+    num_views = len(cam)
 
     # Use TexturePipeline with in-memory frames and camera override (Option B)
     tp = TexturePipeline(
@@ -232,6 +256,7 @@ def parse_args():
     parser.add_argument("--uv-size", type=int, default=2048, help="UV texture resolution")
     parser.add_argument("--frame-step", type=int, default=1, help="Use every Nth frame from video")
     parser.add_argument("--max-frames", type=int, default=0, help="Max frames to use (0=all)")
+    # parser.add_argument("--camera-step", type=int, default=1, help="Use every Nth camera from camera.json")
     parser.add_argument(
         "--ctx-type",
         type=str,
@@ -301,6 +326,7 @@ def main():
     output_dir = Path(args.output_dir)
     blender_bin = Path(args.blender_bin)
     next_camera_json = Path(args.next_camera_json) if args.next_camera_json else None
+    # camera_step = args.camera_step
 
     project_and_render(
         mesh_path=blend_path,
@@ -313,6 +339,7 @@ def main():
         uv_size=args.uv_size,
         frame_step=max(1, args.frame_step),
         max_frames=args.max_frames,
+        # camera_step=camera_step,
         ctx_type=args.ctx_type,
         next_camera_json=next_camera_json, # 如果使用下一个相机路径渲染，则设置 next_camera_json
         axis_convert=args.axis_convert,
