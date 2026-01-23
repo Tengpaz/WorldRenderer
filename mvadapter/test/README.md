@@ -50,7 +50,7 @@ python -m mvadapter.test.pipeline_opt \
 ## 从blend导出depth和nornal数据
 
 ```bash
-export PYTHONPATH=/apdcephfs_cq5/share_300600172/suanhuang/users/wangyuzhen/WorldRenderer # 指向项目根目录
+export PYTHONPATH=/vePFS-MLP/buaa/wangyuzhen/WorldRenderer # 指向项目根目录
 python -m mvadapter.test.pipeline \
   --device cuda \
   --uv-size 2048 \
@@ -58,9 +58,9 @@ python -m mvadapter.test.pipeline \
   --max-frames 100 \
   --height 480 \
   --width 720 \
-  --blender-bin ../blender/blender-5.0.1-linux-x64/blender \
+  --blender-bin /vePFS-MLP/buaa/wangyuzhen/blender-5.0.1-linux-x64/blender \
   --blend-path mvadapter/test/town.blend \
-  --output-dir mvadapter/test/output \
+  --output-dir mvadapter/test/output2 \
   --debug
 ```
 

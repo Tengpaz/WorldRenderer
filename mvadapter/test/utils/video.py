@@ -4,7 +4,7 @@ import numpy as np
 
 import cv2
 
-def export_frames(video_path, output_dir, frame_offset=-1):
+def export_frames(video_path, output_dir, frame_offset=0):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video: {video_path}")
